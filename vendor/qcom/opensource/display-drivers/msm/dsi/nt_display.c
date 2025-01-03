@@ -81,24 +81,18 @@ int set_refresh_rate(struct sde_connector *sde_conn, int index)
 		nt_tx_cmd(sde_conn, panel->nt_cmd_sets[DSI_CMD_1HZ_DIMMING].cmds, COMMAND_LENGTH_2_BYTE_SEND);
 		break;
 	case 7:
-		//set 5A 01, te follow source.@{
 		nt_tx_cmd(sde_conn, panel->nt_cmd_sets[DSI_CMD_TE_FOLLOW_SOURCE].cmds, COMMAND_LENGTH_1_BYTE_SEND);
-		//@}
 		nt_tx_cmd(sde_conn, panel->nt_cmd_sets[DSI_CMD_60HZ_NODIMMING].cmds, COMMAND_LENGTH_2_BYTE_SEND);
 		break;
 	case 8:
-		//set 5A 00, te don't follow source. @{
 		nt_tx_cmd(sde_conn, panel->nt_cmd_sets[DSI_CMD_TE_NOTFOLLOW_SOURCE].cmds, COMMAND_LENGTH_1_BYTE_SEND);
-		//@}
 		nt_tx_cmd(sde_conn, panel->nt_cmd_sets[DSI_CMD_30HZ_NODIMMING].cmds, COMMAND_LENGTH_2_BYTE_SEND);
 		break;
 	case 9:
 		nt_tx_cmd(sde_conn, panel->nt_cmd_sets[DSI_CMD_24HZ_NODIMMING].cmds, COMMAND_LENGTH_2_BYTE_SEND);
 		break;
 	case 10:
-		//set 5A 00, te don't follow source. @{
 		nt_tx_cmd(sde_conn, panel->nt_cmd_sets[DSI_CMD_TE_NOTFOLLOW_SOURCE].cmds, COMMAND_LENGTH_1_BYTE_SEND);
-		//@}
 		nt_tx_cmd(sde_conn, panel->nt_cmd_sets[DSI_CMD_10HZ_NODIMMING].cmds, COMMAND_LENGTH_2_BYTE_SEND);
 		break;
 	case 11:
