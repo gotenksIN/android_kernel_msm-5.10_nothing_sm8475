@@ -6,6 +6,9 @@
      - vendor/qcom/proprietary/
      - vendor/qcom/opensource/
 
+- NOS 3.0(Pong-V3.0-250113-1723)
+  - No update
+
 # How do I submit patches to Android Common Kernels
 
 1. BEST: Make all of your changes to upstream Linux. If appropriate, backport to the stable releases.
