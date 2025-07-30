@@ -15,6 +15,9 @@
 - NOS 3.0(Pong-V3.0-250506-1805)
   - No update
 
+- NOS 3.2(Pong-V3.2-250708-2227)
+  - No update
+
 # How do I submit patches to Android Common Kernels
 
 1. BEST: Make all of your changes to upstream Linux. If appropriate, backport to the stable releases.
