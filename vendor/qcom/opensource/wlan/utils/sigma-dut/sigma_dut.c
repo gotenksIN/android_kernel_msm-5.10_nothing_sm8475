@@ -798,6 +798,11 @@ static void determine_sigma_p2p_ifname(struct sigma_dut *dut)
 
 	snprintf(buf, sizeof(buf), "p2p-dev-%s", get_station_ifname(dut));
 	ctrl = open_wpa_mon(buf);
+	if (!ctrl) {
+		snprintf(buf, sizeof(buf), "p2p0");
+		ctrl = open_wpa_mon(buf);
+	}
+
 	if (ctrl) {
 		wpa_ctrl_detach(ctrl);
 		wpa_ctrl_close(ctrl);
@@ -889,6 +894,7 @@ static void set_defaults(struct sigma_dut *dut)
 #endif /* ANDROID */
 	dut->autoconnect_default = 1;
 	set_host_name(dut);
+	dut->pasn_type = 0xf;
 }
 
 
@@ -942,6 +948,8 @@ static void deinit_sigma_dut(struct sigma_dut *dut)
 		dut->mdnssd_so = NULL;
 	}
 #endif /* ANDROID_MDNS */
+	free(dut->sta_bssid_pool);
+	dut->sta_bssid_pool = NULL;
 }
 
 

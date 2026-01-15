@@ -463,7 +463,7 @@
 			qupv3_se4_i2c_sda_active: qupv3_se4_i2c_sda_active {
 				mux {
 					pins = "gpio8";
-					function = "qup0_se4_l0_mira";
+					function = "qup0_se4_l0";
 				};
 
 				config {
@@ -476,7 +476,7 @@
 			qupv3_se4_i2c_scl_active: qupv3_se4_i2c_scl_active {
 				mux {
 					pins = "gpio9";
-					function = "qup0_se4_l1_mira";
+					function = "qup0_se4_l1";
 				};
 
 				config {
@@ -504,7 +504,7 @@
 			qupv3_se4_spi_miso_active: qupv3_se4_spi_miso_active {
 				mux {
 					pins = "gpio8";
-					function = "qup0_se4_l0_mira";
+					function = "qup0_se4_l0";
 				};
 
 				config {
@@ -517,7 +517,7 @@
 			qupv3_se4_spi_mosi_active: qupv3_se4_spi_mosi_active {
 				mux {
 					pins = "gpio9";
-					function = "qup0_se4_l1_mira";
+					function = "qup0_se4_l1";
 				};
 
 				config {

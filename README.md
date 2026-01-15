@@ -1,28 +1,11 @@
  # NOTHING Phone(2) Release Note
-- NOS 3.0(Pong-V3.0-241226-2001)
+- NOS 4.0(Pong-B4.0-251119-1654)
   - The opensource of of the initial release.
   - Devicetree and modules path
      - arch/arm64/boot/dts/vendor/
      - vendor/qcom/proprietary/
      - vendor/qcom/opensource/
 
-- NOS 3.0(Pong-V3.0-250113-1723)
-  - No update
-
-- NOS 3.0(Pong-V3.0-250304-1717)
-  - No update
-
-- NOS 3.0(Pong-V3.0-250506-1805)
-  - No update
-
-- NOS 3.2(Pong-V3.2-250708-2227)
-  - No update
-
-- NOS 3.2(Pong-V3.2-250828-1921)
-  - No update
-
-- NOS 3.2(Pong-V3.2-250917-1451)
-  - No update
 
 # How do I submit patches to Android Common Kernels
 

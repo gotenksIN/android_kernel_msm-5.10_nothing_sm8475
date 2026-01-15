@@ -216,6 +216,91 @@
 		};
 	};
 
+	max_int_active: max_int_active {
+		mux {
+			pins = "gpio84";
+			function = "gpio";
+		};
+
+		config {
+			pins = "gpio84";
+			drive-strength = <2>;
+			bias-pull-up;
+			input-enable;
+		};
+	};
+
+	max_int_sleep: max_int_sleep  {
+		mux {
+			pins = "gpio84";
+			function = "gpio";
+		};
+
+		config {
+			pins = "gpio84";
+			drive-strength = <2>;   /* 2 mA */
+			bias-pull-down;         /* PULL DOWN */
+			input-enable;
+		};
+	};
+
+	vcsel_fault_active: vcsel_fault_active {
+		mux {
+			pins = "gpio86";
+			function = "gpio";
+		};
+
+		config {
+			pins = "gpio86";
+			drive-strength = <2>;   /* 2 mA */
+			bias-pull-up;           /* PULL UP */
+			input-enable;
+		};
+	};
+
+	vcsel_fault_sleep: vcsel_fault_sleep {
+		mux {
+			pins = "gpio86";
+			function = "gpio";
+		};
+
+		config {
+			pins = "gpio86";
+			drive-strength = <2>;   /* 2 mA */
+			bias-pull-down;         /* PULL DOWN */
+			input-enable;
+		};
+	};
+
+	qupv3_se11_spi_pins: qupv3_se11_spi_pins {
+		qupv3_se11_spi_miso_active: qupv3_se11_spi_miso_active {
+			mux {
+				pins = "gpio90";
+				function = "qup1_se4_l0";
+			};
+
+			config {
+				pins = "gpio90";
+				drive-strength = <6>;
+				bias-disable;
+			};
+		};
+
+		qupv3_se11_spi_sleep: qupv3_se11_spi_sleep {
+			mux {
+				pins = "gpio90", "gpio82",
+					"gpio83", "gpio84";
+				function = "gpio";
+			};
+
+			config {
+				pins = "gpio90", "gpio82",
+					"gpio83", "gpio84";
+				drive-strength = <6>;
+				bias-disable;
+			};
+		};
+	};
 };
 
 &soc {
@@ -672,3 +757,39 @@
 		io-channel-names = "ipd";
 	};
 };
+
+&qupv3_se11_spi {
+	status = "disabled";
+};
+
+&qupv3_se11_i2c {
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	max77720_tof: max77720@41 {
+		compatible = "adi,max77720";
+		reg = <0x41>;
+		interrupt-parent = <&tlmm>;
+		interrupt-names = "vcsel_fault_irq";
+		max77720,irq_gpio = <&tlmm 86>;
+		max77720,irq_pin = <&tlmm 86 0x00>;
+		interrupts = <86 1>;
+		pinctrl-names = "max_default", "max_sleep";
+		pinctrl-0 = <&max_int_active &vcsel_fault_active>;
+		pinctrl-1 = <&max_int_sleep &vcsel_fault_sleep>;
+
+		regulator-name = "vout_dtof";
+		regulator-min-microvolt = <11000000>;
+		regulator-max-microvolt = <11000000>;
+		regulator-initial-mode = <1>;
+		status = "okay";
+	};
+};
+
+&pm8010m_l2 {
+	regulator-min-microvolt = <528000>;
+	regulator-max-microvolt = <1544000>;
+	qcom,init-voltage = <1100000>;
+};
+

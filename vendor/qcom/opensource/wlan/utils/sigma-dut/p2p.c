@@ -123,9 +123,16 @@ void start_dhcp(struct sigma_dut *dut, const char *group_ifname, int go)
 		snprintf(buf, sizeof(buf), "ifconfig %s %s", group_ifname,
 			 GO_IP_ADDR);
 		run_system(dut, buf);
+#ifdef ANDROID
 		snprintf(buf, sizeof(buf),
 			 "/system/bin/dnsmasq -x /data/dnsmasq.pid --no-resolv --no-poll --dhcp-range=%s,%s,1h",
 			 START_IP_RANGE, END_IP_RANGE);
+#else /* ANDROID */
+		run_system(dut, "killall dnsmasq");
+		snprintf(buf, sizeof(buf),
+			 "dnsmasq --no-resolv --no-poll --port=5353 --dhcp-range=%s,%s,1h",
+			 START_IP_RANGE, END_IP_RANGE);
+#endif /* ANDROID */
 	} else {
 #ifdef ANDROID
 		if (access("/system/bin/dhcpcd", F_OK) != -1) {
@@ -344,7 +351,8 @@ void p2p_create_event_thread(struct sigma_dut *dut)
 
 
 static int p2p_group_add(struct sigma_dut *dut, const char *ifname,
-			 int go, const char *grpid, const char *ssid)
+			 int go, const char *grpid, const char *ssid,
+			 const char *peer_mac)
 {
 	struct wfa_cs_p2p_group *grp;
 
@@ -360,6 +368,8 @@ static int p2p_group_add(struct sigma_dut *dut, const char *ifname,
 	grp->go = go;
 	strlcpy(grp->grpid, grpid, P2P_GRP_ID_LEN);
 	strlcpy(grp->ssid, ssid, sizeof(grp->ssid));
+	if (peer_mac)
+		strlcpy(grp->peer_mac, peer_mac, sizeof(grp->peer_mac));
 
 	grp->next = dut->groups;
 	dut->groups = grp;
@@ -465,7 +475,7 @@ static struct wfa_cs_p2p_group * p2p_group_get(struct sigma_dut *dut,
 		}
 
 		if (add) {
-			p2p_group_add(dut, ifname, go, grpid, ssid);
+			p2p_group_add(dut, ifname, go, grpid, ssid, NULL);
 			return dut->groups;
 		}
 
@@ -476,7 +486,34 @@ static struct wfa_cs_p2p_group * p2p_group_get(struct sigma_dut *dut,
 }
 
 
-static const char * get_group_ifname(struct sigma_dut *dut, const char *ifname)
+const char * get_p2p_group_ifname(struct sigma_dut *dut, const char *ifname)
+{
+	char *iface, *pos;
+	static char buf[1000];
+
+	/* Try to find a suitable group interface */
+	if (wpa_command_resp(get_main_ifname(dut), "INTERFACES",
+			     buf, sizeof(buf)) < 0)
+		return ifname;
+
+	iface = buf;
+	while (iface && *iface) {
+		pos = strchr(iface, '\n');
+		if (pos)
+			*pos++ = '\0';
+		if (memcmp(iface, "p2p-", 4) == 0) {
+			sigma_dut_print(dut, DUT_MSG_DEBUG,
+					"Considering interface '%s' for IP address",
+					iface);
+			return iface;
+		}
+		iface = pos;
+	}
+	return ifname;
+}
+
+
+const char * get_group_ifname(struct sigma_dut *dut, const char *ifname)
 {
 	static char buf[1000];
 	char *iface, *pos;
@@ -777,7 +814,13 @@ static enum sigma_cmd_result cmd_sta_set_p2p(struct sigma_dut *dut,
 			snprintf(buf, sizeof(buf), "P2P_SET noa %d,%d,%d",
 				dut->noa_count, start,
 				dut->noa_duration);
-			if (wpa_command(ifname, buf) < 0) {
+			if (wpa_command(ifname, buf) == 0)
+				goto noa_done;
+
+			snprintf(buf, sizeof(buf), "P2P_SET_NOA %d %d %d %d",
+				 dut->noa_count, start, dut->noa_duration,
+				 dut->noa_interval);
+			if (wcn_driver_cmd(intf, buf) < 0) {
 				send_resp(dut, conn, SIGMA_ERROR,
 					  "errorCode,Use of NoA as GO not supported");
 				return 0;
@@ -807,6 +850,31 @@ noa_done:
 			 atoi(val));
 		if (wpa_command(intf, buf) < 0)
 			return -2;
+	}
+
+	val = get_param(cmd, "GenNewDeviceAddr");
+	if (val && atoi(val) == 1) {
+		sigma_dut_print(dut, DUT_MSG_INFO,
+				"Generate new P2P Device Address");
+		if (wpa_command(intf, "NEW_RANDOM_MAC_ADDRESS") < 0)
+			return ERROR_SEND_STATUS;
+	}
+
+	val = get_param(cmd, "PASN");
+	if (val && strcasecmp(val, "Enable") == 0) {
+		/* Support Wi-Fi Direct R2 capabilities */
+		sigma_dut_print(dut, DUT_MSG_INFO, "PASN Enable");
+		val = get_param(cmd, "PASN_Unsupported_DH_Group");
+		if (val) {
+			if (atoi(val) == 20)
+				dut->pasn_type &= ~0xc;
+			else if (atoi(val) == 19)
+				dut->pasn_type &= ~0x3;
+		}
+		snprintf(buf, sizeof(buf), "P2P_SET pasn_type %d",
+			 dut->pasn_type);
+		if (wpa_command(intf, buf) < 0)
+			return ERROR_SEND_STATUS;
 	}
 
 	val = get_param(cmd, "Service_Discovery");
@@ -859,7 +927,200 @@ noa_done:
 		}
 	}
 
+	val = get_param(cmd, "UnsyncServDsc");
+	if (val) {
+		if (strcasecmp(val, "On") == 0) {
+			/* Support USD functionality */
+			dut->usd_enabled = true;
+			sigma_dut_print(dut, DUT_MSG_INFO,
+					"Unsynchronized Service Discovery ON");
+		} else {
+			dut->usd_enabled = false;
+			sigma_dut_print(dut, DUT_MSG_INFO,
+					"Unsynchronized Service Discovery OFF");
+		}
+	}
+
+	val  = get_param(cmd, "WFDR2Capabilities");
+	if (val) {
+		if (strcasecmp(val, "On") == 0) {
+			/* Support Wi-Fi Direct R2 capabilities */
+			dut->p2p_r2_capable = true;
+			sigma_dut_print(dut, DUT_MSG_INFO,
+					"Wi-Fi Direct R2 Capabilities ON");
+			snprintf(buf, sizeof(buf),
+				 "P2P_SET chan_switch_req_enable 1");
+			if (wpa_command(intf, buf) < 0)
+				return ERROR_SEND_STATUS;
+			wpa_command(intf, "P2P_SET reginfo 2");
+		} else {
+			dut->p2p_r2_capable = false;
+			sigma_dut_print(dut, DUT_MSG_INFO,
+					"Wi-Fi Direct R2 Capabilities OFF");
+		}
+
+	}
+
+	val = get_param(cmd, "TWT_Power_Management");
+	if (val) {
+		int twt_pm = get_enable_disable(val);
+
+		snprintf(buf, sizeof(buf), "P2P_SET twt_power_mgmt %d", twt_pm);
+		if (wpa_command(intf, buf) < 0)
+			return ERROR_SEND_STATUS;
+
+		dut->is_p2p_twt_power_mgmt_enabled = twt_pm;
+		sigma_dut_print(dut, DUT_MSG_INFO,
+				"TWT_Power_Management enable: %d", twt_pm);
+	}
+
+	val = get_param(cmd, "UnavailabilityMode");
+	if (val)
+		dut->twt_param.unavailability_mode = !!atoi(val);
+
+	val = get_param(cmd, "TWT_Trigger");
+	if (val)
+		dut->twt_param.twt_trigger = !!atoi(val);
+
+	val = get_param(cmd, "WakeIntervalMantissa");
+	if (val)
+		dut->twt_param.wake_interval_mantissa = atoi(val);
+
+	val = get_param(cmd, "WakeIntervalExp");
+	if (val)
+		dut->twt_param.wake_interval_exp = atoi(val);
+
+	val = get_param(cmd, "NominalMinWakeDur");
+	if (val)
+		dut->twt_param.nominal_min_wake_dur = atoi(val);
+
+	val = get_param(cmd, "BTWT_ID");
+	if (val) {
+		dut->twt_param.bcast_twt_id = atoi(val);
+		dut->twt_param.is_bcast_twt = true;
+		dut->twt_param.is_user_config = true;
+		dut->twt_param.responder_pm = 1;
+	}
+
+	val = get_param(cmd, "BTWT_Persistence");
+	if (val)
+		dut->twt_param.bcast_twt_persis = atoi(val);
+
+	val = get_param(cmd, "BTWT_Recommendation");
+	if (val)
+		dut->twt_param.bcast_twt_recommdn = atoi(val);
+
 	return 1;
+}
+
+
+static int set_p2p_twt_unavailability_mode(struct sigma_dut *dut,
+					   struct sigma_conn *conn,
+					   const char *intf)
+{
+#ifdef NL80211_SUPPORT
+	struct nlattr *params;
+	struct nlattr *attr;
+	struct nl_msg *msg;
+	int ifindex, ret;
+
+	ifindex = if_nametoindex(intf);
+	if (ifindex == 0) {
+		sigma_dut_print(dut, DUT_MSG_ERROR,
+				"%s: Index for interface %s failed",
+				__func__, intf);
+		return -1;
+	}
+
+	msg = nl80211_drv_msg(dut, dut->nl_ctx, ifindex, 0,
+			      NL80211_CMD_VENDOR);
+	if (!msg ||
+	    nla_put_u32(msg, NL80211_ATTR_IFINDEX, ifindex) ||
+	    nla_put_u32(msg, NL80211_ATTR_VENDOR_ID, OUI_QCA) ||
+	    nla_put_u32(msg, NL80211_ATTR_VENDOR_SUBCMD,
+			QCA_NL80211_VENDOR_SUBCMD_CONFIG_TWT)) {
+		sigma_dut_print(dut, DUT_MSG_ERROR,
+				"%s: err in adding vendor_cmd", __func__);
+		nlmsg_free(msg);
+		return -1;
+	}
+
+	attr = nla_nest_start(msg, NL80211_ATTR_VENDOR_DATA);
+	if (!attr ||
+	    nla_put_u8(msg, QCA_WLAN_VENDOR_ATTR_CONFIG_TWT_OPERATION,
+		       QCA_WLAN_TWT_SET_PARAM)) {
+		sigma_dut_print(dut, DUT_MSG_ERROR,
+				"%s: err in adding vendor attr", __func__);
+		nlmsg_free(msg);
+		return -1;
+	}
+
+	params = nla_nest_start(msg, QCA_WLAN_VENDOR_ATTR_CONFIG_TWT_PARAMS);
+	if (!params ||
+	    nla_put_flag(msg,
+			 QCA_WLAN_VENDOR_ATTR_TWT_SET_PARAM_UNAVAILABILITY_MODE)) {
+		sigma_dut_print(dut, DUT_MSG_ERROR,
+				"%s: err in adding vendor_params", __func__);
+		nlmsg_free(msg);
+		return -1;
+	}
+
+	nla_nest_end(msg, params);
+	nla_nest_end(msg, attr);
+
+	ret = send_and_recv_msgs(dut, dut->nl_ctx, msg, NULL, NULL);
+	if (ret)
+		sigma_dut_print(dut, DUT_MSG_ERROR,
+				"%s: err in send_and_recv_msgs, ret=%d",
+				__func__, ret);
+
+	return 0;
+#else /* NL80211_SUPPORT */
+	sigma_dut_print(dut, DUT_MSG_ERROR,
+			"TWT unavailability mode cannot be done without NL80211_SUPPORT defined");
+	return -1;
+#endif /* NL80211_SUPPORT */
+}
+
+
+static int set_p2p_twt_params(struct sigma_dut *dut, struct sigma_conn *conn,
+			      const char *intf)
+{
+	/* Set default param when user config is not available. */
+	if (!dut->twt_param.is_user_config) {
+		dut->twt_param.is_bcast_twt = true;
+		dut->twt_param.unavailability_mode = false;
+		dut->twt_param.twt_trigger = false;
+		dut->twt_param.flow_type = 1;
+		dut->twt_param.protection = 0;
+		dut->twt_param.target_wake_time = 0;
+		dut->twt_param.wake_interval_mantissa = 112;
+		/* SI = pow(2, exp) * mantissa */
+		dut->twt_param.wake_interval_exp = 10;
+		/* SP = val * 256 us */
+		dut->twt_param.nominal_min_wake_dur = 78;
+		dut->twt_param.bcast_twt_id = 0;
+		dut->twt_param.bcast_twt_persis = 0;
+		dut->twt_param.bcast_twt_recommdn = 0;
+		dut->twt_param.responder_pm = 1;
+	}
+
+	dut->twt_param.cmd_type = 1;
+	dut->twt_param.ifindex = if_nametoindex(intf);
+	if (sta_twt_request(dut, conn, NULL) < 0) {
+		sigma_dut_print(dut, DUT_MSG_ERROR,
+				"Failed to set default BCAST TWT parms");
+		return -1;
+	}
+
+	/* Configure Unavailability Mode bit in control field of TWT element */
+	if (dut->twt_param.unavailability_mode &&
+	    set_p2p_twt_unavailability_mode(dut, conn, intf) < 0) {
+		sigma_dut_print(dut, DUT_MSG_ERROR,
+				"Failed to set unavailability mode");
+		return -1;
+	}
+	return 0;
 }
 
 
@@ -921,8 +1182,21 @@ cmd_sta_start_autonomous_go(struct sigma_dut *dut, struct sigma_conn *conn,
 		return -2;
 	}
 
-	snprintf(buf, sizeof(buf), "P2P_GROUP_ADD %sfreq=%d",
-		 dut->persistent ? "persistent " : "", freq);
+	if (dut->p2p_r2_capable) {
+		const char *type = get_param(cmd, "type");
+		int p2p_mode = 0;
+
+		if (type && strcasecmp(type, "PCC") == 0)
+			p2p_mode = 2;
+
+		snprintf(buf, sizeof(buf),
+			 "P2P_GROUP_ADD %sfreq=%d p2pmode=%d he p2p2",
+			 dut->persistent ? "persistent " : "", freq, p2p_mode);
+	} else {
+		snprintf(buf, sizeof(buf), "P2P_GROUP_ADD %sfreq=%d",
+			 dut->persistent ? "persistent " : "", freq);
+	}
+
 	if (wpa_command(intf, buf) < 0) {
 		wpa_ctrl_detach(ctrl);
 		wpa_ctrl_close(ctrl);
@@ -991,7 +1265,8 @@ cmd_sta_start_autonomous_go(struct sigma_dut *dut, struct sigma_conn *conn,
 	sigma_dut_print(dut, DUT_MSG_DEBUG, "Group BSSID %s", bssid);
 
 	snprintf(grpid, sizeof(grpid), "%s %s", go_dev_addr, ssid);
-	p2p_group_add(dut, ifname, strcmp(gtype, "GO") == 0, grpid, ssid);
+	p2p_group_add(dut, ifname, strcmp(gtype, "GO") == 0, grpid, ssid,
+		      NULL);
 
 	snprintf(resp, sizeof(resp), "GroupID,%s", grpid);
 
@@ -1001,6 +1276,13 @@ cmd_sta_start_autonomous_go(struct sigma_dut *dut, struct sigma_conn *conn,
 		miracast_start_autonomous_go(dut, conn, cmd, ifname);
 	}
 #endif /* MIRACAST */
+
+	if (dut->is_p2p_twt_power_mgmt_enabled &&
+	    set_p2p_twt_params(dut, conn, ifname) < 0) {
+		sigma_dut_print(dut, DUT_MSG_ERROR,
+				"Failed to set default TWT-based P2P Power Management");
+		return ERROR_SEND_STATUS;
+	}
 
 	send_resp(dut, conn, SIGMA_COMPLETE, resp);
 	return 0;
@@ -1119,7 +1401,8 @@ static enum sigma_cmd_result cmd_sta_p2p_connect(struct sigma_dut *dut,
 	sigma_dut_print(dut, DUT_MSG_DEBUG, "Group BSSID %s", bssid);
 
 	snprintf(grpid, sizeof(grpid), "%s %s", bssid, ssid);
-	p2p_group_add(dut, ifname, strcmp(gtype, "GO") == 0, grpid, ssid);
+	p2p_group_add(dut, ifname, strcmp(gtype, "GO") == 0, grpid, ssid,
+		      devid);
 
 	return 1;
 }
@@ -1365,7 +1648,7 @@ static int p2p_group_formation_event(struct sigma_dut *dut,
 	sigma_dut_print(dut, DUT_MSG_DEBUG, "Group BSSID %s", bssid);
 
 	snprintf(grpid, sizeof(grpid), "%s %s", go_dev_addr, ssid);
-	p2p_group_add(dut, ifname, strcmp(gtype, "GO") == 0, grpid, ssid);
+	p2p_group_add(dut, ifname, strcmp(gtype, "GO") == 0, grpid, ssid, NULL);
 	snprintf(resp, sizeof(resp), "Result,%s,GroupID,%s%s%s",
 		 strcmp(gtype, "GO") == 0 ? "GO" : "CLIENT", grpid, role,
 		 nfc ? ",PauseFlag,0" : "");
@@ -1476,6 +1759,11 @@ cmd_sta_send_p2p_invitation_req(struct sigma_dut *dut, struct sigma_conn *conn,
 	char buf[4096];
 	struct wpa_ctrl *ctrl;
 	int res;
+	const char *events[] = {
+		"P2P-INVITATION-RESULT",
+		"P2P-INVITATION-ACCEPTED",
+		NULL
+	};
 
 	if (devid == NULL || grpid == NULL)
 		return -1;
@@ -1542,8 +1830,7 @@ cmd_sta_send_p2p_invitation_req(struct sigma_dut *dut, struct sigma_conn *conn,
 		return -2;
 	}
 
-	res = get_wpa_cli_event(dut, ctrl, "P2P-INVITATION-RESULT",
-				buf, sizeof(buf));
+	res = get_wpa_cli_events(dut, ctrl, events, buf, sizeof(buf));
 
 	wpa_ctrl_detach(ctrl);
 	wpa_ctrl_close(ctrl);
@@ -1810,9 +2097,9 @@ static enum sigma_cmd_result cmd_sta_get_psk(struct sigma_dut *dut,
 }
 
 
-enum sigma_cmd_result cmd_sta_p2p_reset(struct sigma_dut *dut,
-					struct sigma_conn *conn,
-					struct sigma_cmd *cmd)
+enum sigma_cmd_result sta_p2p_reset_default(struct sigma_dut *dut,
+					    struct sigma_conn *conn,
+					    struct sigma_cmd *cmd)
 {
 	const char *intf = get_param(cmd, "interface");
 	struct wfa_cs_p2p_group *grp, *prev;
@@ -1827,6 +2114,11 @@ enum sigma_cmd_result cmd_sta_p2p_reset(struct sigma_dut *dut,
 	dut->go = 0;
 	dut->p2p_client = 0;
 	dut->wps_method = WFA_CS_WPS_NOT_READY;
+	dut->pasn_type = 0xf;
+	dut->is_p2p_twt_power_mgmt_enabled = false;
+	dut->twt_param.is_user_config = false;
+	dut->twt_param.is_bcast_twt = false;
+	dut->twt_param.unavailability_mode = false;
 
 	grp = dut->groups;
 	while (grp) {
@@ -1863,6 +2155,7 @@ enum sigma_cmd_result cmd_sta_p2p_reset(struct sigma_dut *dut,
 	wpa_command(get_station_ifname(dut), "P2P_SET ps 96");
 	wpa_command(get_station_ifname(dut), "P2P_SET ps 0");
 	wpa_command(intf, "P2P_SET ps 0");
+	wpa_command(intf, "P2P_SET chan_switch_req_enable 0");
 	wpa_command(intf, "SET persistent_reconnect 1");
 	wpa_command(intf, "SET ampdu 1");
 	run_system(dut, "iptables -F INPUT");
@@ -1890,65 +2183,77 @@ enum sigma_cmd_result cmd_sta_p2p_reset(struct sigma_dut *dut,
 }
 
 
+static enum sigma_cmd_result cmd_sta_p2p_reset(struct sigma_dut *dut,
+					       struct sigma_conn *conn,
+					       struct sigma_cmd *cmd)
+{
+	dut->program = PROGRAM_P2P;
+
+	if (get_param(cmd, "Runtime_ID"))
+		dev_start_test_log(dut, conn, cmd);
+
+	return sta_p2p_reset_default(dut, conn, cmd);
+}
+
+
 static enum sigma_cmd_result cmd_sta_get_p2p_ip_config(struct sigma_dut *dut,
 						       struct sigma_conn *conn,
 						       struct sigma_cmd *cmd)
 {
-	/* const char *intf = get_param(cmd, "Interface"); */
+	const char *intf = get_param(cmd, "Interface");
+	const char *type = get_param(cmd, "type");
 	const char *grpid = get_param(cmd, "GroupID");
 	struct wfa_cs_p2p_group *grp = NULL;
+	struct wfa_cs_p2p_group group;
 	int count;
 	char macaddr[20];
+	u8 mac[ETH_ALEN];
 	char resp[200], info[150];
+	char ipv6_buf[100], *dns = "0.0.0.0";
+	const char *ifname;
 
-	if (grpid == NULL)
-		return -1;
+	if (!intf)
+		intf = get_main_ifname(dut);
 
-	if (strcmp(grpid, "$P2P_GROUP_ID") == 0)
-		return -1;
 
-	/*
-	 * If we did not initiate the operation that created the group, we may
-	 * not have the group information available in the DUT code yet and it
-	 * may take some time to get this from wpa_supplicant in case we are
-	 * the P2P client. As such, we better try this multiple times to allow
-	 * some time to complete the operation.
-	 */
+	if (grpid) {
+		if (strcmp(grpid, "$P2P_GROUP_ID") == 0)
+			return -1;
 
-	sigma_dut_print(dut, DUT_MSG_DEBUG, "Waiting to find the requested "
-			"group");
-	count = dut->default_timeout;
-	while (count > 0) {
-		grp = p2p_group_get(dut, grpid);
-		if (grp == NULL) {
-			sigma_dut_print(dut, DUT_MSG_DEBUG, "Requested group "
-					"not yet found (count=%d)", count);
-			sleep(1);
-		} else
-			break;
-		count--;
-	}
-	if (grp == NULL) {
-		send_resp(dut, conn, SIGMA_ERROR,
-			  "errorCode,Requested group not found");
-		return 0;
-	}
+		/*
+		 * If we did not initiate the operation that created the group,
+		 * we may not have the group information available in the DUT
+		 * code yet and it may take some time to get this from
+		 * wpa_supplicant in case we are the P2P client. As such, we
+		 * better try this multiple times to allow some time to
+		 * complete the operation.
+		 */
 
-	sigma_dut_print(dut, DUT_MSG_DEBUG, "Waiting for IP address on group "
-			"interface %s", grp->ifname);
-	if (wait_ip_addr(dut, grp->ifname, dut->default_timeout) < 0) {
-		send_resp(dut, conn, SIGMA_ERROR,
-			  "errorCode,No IP address received");
-		return 0;
-	}
+		sigma_dut_print(dut, DUT_MSG_DEBUG,
+				"Waiting to find the requested group");
 
-	if (get_ip_config(dut, grp->ifname, info, sizeof(info)) < 0) {
-		sigma_dut_print(dut, DUT_MSG_INFO, "Failed to get IP address "
-				"for group interface %s",
-				grp->ifname);
-		send_resp(dut, conn, SIGMA_ERROR,
-			  "errorCode,Failed to get IP address");
-		return 0;
+		count = dut->default_timeout;
+		while (count > 0) {
+			grp = p2p_group_get(dut, grpid);
+			if (!grp) {
+				sigma_dut_print(dut, DUT_MSG_DEBUG,
+						"Requested group not yet found (count=%d)",
+						count);
+				sleep(1);
+			} else {
+				break;
+			}
+			count--;
+		}
+		if (!grp) {
+			send_resp(dut, conn, SIGMA_ERROR,
+				  "errorCode,Requested group not found");
+			return STATUS_SENT_ERROR;
+		}
+	} else {
+		ifname = get_group_ifname(dut, intf);
+		strlcpy(group.ifname, ifname, IFNAMSIZ);
+		grp = &group;
 	}
 
 	if (get_wpa_status(grp->ifname, "address",
@@ -1959,11 +2264,44 @@ static enum sigma_cmd_result cmd_sta_get_p2p_ip_config(struct sigma_dut *dut,
 		return -2;
 	}
 
-	sigma_dut_print(dut, DUT_MSG_DEBUG, "IP address for group interface "
-			"%s found", grp->ifname);
+	if (type && atoi(type) == 2) {
+		/* IPv6 Type */
 
-	snprintf(resp, sizeof(resp), "%s,P2PInterfaceAddress,%s",
-		 info, macaddr);
+		if (parse_mac_address(dut, macaddr, mac))
+			return -1;
+
+		convert_mac_addr_to_ipv6_lladdr(mac, ipv6_buf,
+						sizeof(ipv6_buf));
+		if (set_ipv6_addr(dut, ipv6_buf, "64", grp->ifname) != 0)
+			return -1;
+
+		snprintf(resp, sizeof(resp),
+			 "dhcp,%d,ip,%s,mask,%d,primary-dns,%s,P2PInterfaceAddress,%s",
+			 0, ipv6_buf, 64, dns, macaddr);
+	} else {
+		sigma_dut_print(dut, DUT_MSG_DEBUG,
+				"Waiting for IP address on group interface %s",
+				grp->ifname);
+		if (wait_ip_addr(dut, grp->ifname, dut->default_timeout) < 0) {
+			send_resp(dut, conn, SIGMA_ERROR,
+				  "errorCode,No IP address received");
+			return STATUS_SENT_ERROR;
+		}
+
+		if (get_ip_config(dut, grp->ifname, info, sizeof(info)) < 0) {
+			sigma_dut_print(dut, DUT_MSG_INFO,
+					"Failed to get IP address for group interface %s",
+					grp->ifname);
+			send_resp(dut, conn, SIGMA_ERROR,
+				  "errorCode,Failed to get IP address");
+			return STATUS_SENT_ERROR;
+		}
+		snprintf(resp, sizeof(resp), "%s,P2PInterfaceAddress,%s",
+			 info, macaddr);
+	}
+
+	sigma_dut_print(dut, DUT_MSG_DEBUG,
+			"IP address for group interface %s found", grp->ifname);
 
 	send_resp(dut, conn, SIGMA_COMPLETE, resp);
 	return 0;
@@ -2057,10 +2395,12 @@ cmd_sta_set_opportunistic_ps(struct sigma_dut *dut, struct sigma_conn *conn,
 			     struct sigma_cmd *cmd)
 {
 	/* const char *intf = get_param(cmd, "Interface"); */
+	const char *intf = get_p2p_ifname(dut, get_param(cmd, "Interface"));
 	struct wfa_cs_p2p_group *grp;
 	char buf[100];
 	const char *grpid = get_param(cmd, "GroupID");
 	const char *ctwindow = get_param(cmd, "CTWindow");
+	int ret;
 
 	if (grpid == NULL || ctwindow == NULL)
 		return -1;
@@ -2074,9 +2414,15 @@ cmd_sta_set_opportunistic_ps(struct sigma_dut *dut, struct sigma_conn *conn,
 
 	snprintf(buf, sizeof(buf), "P2P_SET ctwindow %d", atoi(ctwindow));
 	if (wpa_command(grp->ifname, buf) < 0) {
-		send_resp(dut, conn, SIGMA_ERROR,
-			  "errorCode,Use of CTWindow as GO not supported");
-		return 0;
+		ret = snprintf(buf, sizeof(buf), "P2P_SET_PS %d %d %d",
+			       -1, 1, atoi(ctwindow));
+		if (ret < 0 || ret >= (int) sizeof(buf) ||
+		    wcn_driver_cmd(intf, buf) < 0) {
+			send_resp(dut, conn, SIGMA_ERROR,
+				  "errorCode,Use of CTWindow and opps_PS as GO not supported");
+			return STATUS_SENT_ERROR;
+		}
+		return SUCCESS_SEND_STATUS;
 	}
 
 	if (wpa_command(grp->ifname, "P2P_SET oppps 1") < 0) {
